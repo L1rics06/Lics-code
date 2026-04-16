@@ -1,0 +1,37 @@
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "run_bash",
+            "description": "在终端中执行一段 bash 命令",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "需要执行的终端命令，例如 touch main.c 或 echo 'hello' > main.c"
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name":"search",
+            "description": "在网络上搜索相关信息",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "需要搜索的内容，例如：GLM-5.1 的使用教程"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+
+]
