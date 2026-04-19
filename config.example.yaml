@@ -1,6 +1,7 @@
-model_config:
+model:
   api_key: "your_api_key_here"
   model_name: "example_model"
   base_url: "https://api.example.com/v1"
   timeout: 30
-  
+app:
+  workspace: "." //默认工作目录为当前目录

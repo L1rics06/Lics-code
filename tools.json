@@ -32,6 +32,65 @@
                 "required": ["query"]
             }
         }
+        
+    },
+    {
+        "type": "function",
+        "function": {
+            "name":"read_file",
+            "description": "打开指定的文件",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "需要打开的文件相对路径，例如：./document.txt"
+                    }
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name":"write_file",
+            "description": "向指定的文件中写入内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "需要写入的文件相对路径，例如：./document.txt"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "需要写入文件的内容，例如：这是一个测试文件。"
+                    }
+                },
+                "required": ["file_path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name":"append_file",
+            "description": "向指定的文件中追加内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "需要追加的文件相对路径，例如：./document.txt"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "需要追加到文件的内容，例如：这是一个测试文件。"
+                    }
+                },
+                "required": ["file_path", "content"]
+            }
+        }
     }
-
 ]
