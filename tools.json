@@ -92,5 +92,30 @@
                 "required": ["file_path", "content"]
             }
         }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"todo",
+            "description":"Update task list. Track progress on multi-step tasks.",
+            "parameters":{
+                "task":{
+                    "type":"object",
+                    "properties":{
+                        "tasks_id":{
+                            "type":"string"
+                        },
+                        "text":{
+                            "type":"string"
+                        },
+                        "status":{
+                            "type":"string",
+                            "enum":["pending", "in_progress", "completed"]
+                        }
+                    },
+                    "required":["tasks_id", "text", "status"] 
+                }
+            }
+        }
     }
 ]
