@@ -1,6 +1,8 @@
-"""终端显示模块：使用 Rich 实现实时美化输出，含 Live Todo 列表与彩色日志"""
+"""终端显示模块：使用 Rich 实现实时美化输出，含 Live Todo 列表与彩色日志；
+支持 info / debug 两种日志级别，debug 模式下输出请求/响应/耗时/用量等详细信息"""
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
@@ -13,10 +15,15 @@ from rich.live import Live
 from rich.text import Text
 from rich.rule import Rule
 from rich import box
-from rich.columns import Columns
-from rich.align import Align
 
 console = Console()
+
+# ─── 日志级别感知 ──────────────────────────────────────────────────────────────
+
+def _is_debug():
+    """延迟导入，避免循环依赖"""
+    from utils import is_debug
+    return is_debug()
 
 # ─── 数据模型 ────────────────────────────────────────────────────────────────
 
@@ -38,7 +45,8 @@ class Task:
 # ─── 主显示类 ─────────────────────────────────────────────────────────────────
 
 class TerminalDisplay:
-    """Rich 驱动的终端显示器，实时渲染 Todo 列表与操作日志"""
+    """Rich 驱动的终端显示器，实时渲染 Todo 列表与操作日志；
+    根据 log_level 自动切换 info / debug 输出粒度"""
 
     def __init__(self):
         self.tasks: list[Task] = []
@@ -53,7 +61,7 @@ class TerminalDisplay:
         self._live = Live(
             self._render(),
             console=console,
-            refresh_per_second=4,  # 降低刷新率，减少闪烁
+            refresh_per_second=1,
             vertical_overflow="visible",
         )
         self._live.start()
@@ -90,6 +98,8 @@ class TerminalDisplay:
             self._log_lines = self._log_lines[-200:]
         self._refresh()
 
+    # ── info 级别日志 ────────────────────────────────────────────────────────
+
     def display_info(self, msg: str):
         self._log(f"[bold cyan]ℹ[/bold cyan]  {msg}")
 
@@ -105,8 +115,76 @@ class TerminalDisplay:
     def display_waiting(self, msg: str):
         self._log(f"[bold magenta]◌[/bold magenta]  {msg}")
 
+    # ── debug 级别日志 ───────────────────────────────────────────────────────
+
+    def display_debug(self, msg: str):
+        """debug 级别日志，仅在 log_level=debug 时输出"""
+        if _is_debug():
+            self._log(f"[bold grey69]🐛[/bold grey69]  {msg}")
+
+    def display_debug_request(self, model: str, messages_count: int, tools_count: int):
+        """详细显示 API 请求要点"""
+        if not _is_debug():
+            return
+        self._log(f"[bold grey69]🐛 ► API 请求[/bold grey69]")
+        self._log(f"[dim]    模型: {model}[/dim]")
+        self._log(f"[dim]    消息数: {messages_count}[/dim]")
+        self._log(f"[dim]    工具数: {tools_count}[/dim]")
+
+    def display_debug_response(self, finish_reason: str, usage: dict = None, tool_calls_count: int = 0, elapsed: float = 0):
+        """详细显示 API 响应要点"""
+        if not _is_debug():
+            return
+        self._log(f"[bold grey69]🐛 ◄ API 响应[/bold grey69]")
+        self._log(f"[dim]    完成原因: {finish_reason}[/dim]")
+        self._log(f"[dim]    工具调用数: {tool_calls_count}[/dim]")
+        if usage:
+            prompt_tokens = usage.get("prompt_tokens", "?")
+            completion_tokens = usage.get("completion_tokens", "?")
+            total_tokens = usage.get("total_tokens", "?")
+            self._log(f"[dim]    Token 用量: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}[/dim]")
+        if elapsed > 0:
+            self._log(f"[dim]    耗时: {elapsed:.2f}s[/dim]")
+
+    def display_debug_tool_detail(self, tool_name: str, args: dict, output: str, elapsed: float = 0):
+        """详细显示工具执行的完整输入/输出要点"""
+        if not _is_debug():
+            return
+        self._log(f"[bold grey69]🐛 🔧 工具详情: {tool_name}[/bold grey69]")
+        # 输入参数
+        try:
+            pretty_args = json.dumps(args, indent=2, ensure_ascii=False)
+        except Exception:
+            pretty_args = str(args)
+        self._log(f"[dim]    ▸ 输入参数:[/dim]")
+        for line in pretty_args.split('\n'):
+            self._log(f"[dim]      {line}[/dim]")
+        # 输出（截断过长内容）
+        truncated = output[:500] + ("..." if len(output) > 500 else "")
+        self._log(f"[dim]    ▸ 输出结果 ({len(output)} 字符): {truncated}[/dim]")
+        if elapsed > 0:
+            self._log(f"[dim]    ▸ 执行耗时: {elapsed:.3f}s[/dim]")
+
+    def display_debug_round(self, round_count: int, message_history_len: int):
+        """显示当前轮次与消息历史长度"""
+        if not _is_debug():
+            return
+        self._log(f"[bold grey69]🐛 第 {round_count} 轮 | 消息历史长度: {message_history_len}[/bold grey69]")
+
+    def display_debug_config(self, model_name: str, base_url: str, workspace: str, log_level: str):
+        """启动时显示配置要点"""
+        if not _is_debug():
+            return
+        self._log(f"[bold grey69]🐛 启动配置[/bold grey69]")
+        self._log(f"[dim]    模型: {model_name}[/dim]")
+        self._log(f"[dim]    API 地址: {base_url}[/dim]")
+        self._log(f"[dim]    工作目录: {workspace}[/dim]")
+        self._log(f"[dim]    日志级别: {log_level}[/dim]")
+
+    # ── 工具调用显示 ──────────────────────────────────────────────────────────
+
     def display_tool_call(self, tool_name: str, args: dict):
-        """显示工具调用，现在直接添加到日志中，不再直接打印"""
+        """显示工具调用，添加到日志中"""
         try:
             pretty = json.dumps(args, indent=2, ensure_ascii=False)
         except Exception:
@@ -115,10 +193,20 @@ class TerminalDisplay:
         # 将工具调用信息格式化为多行日志
         self._log(f"[bold cyan]🔧 工具:[/bold cyan] [bold]{tool_name}[/bold]")
         
-        # 将参数按行添加到日志
-        args_lines = pretty.split('\n')
-        for line in args_lines:
-            self._log(f"[dim]  {line}[/dim]")
+        # 将参数按行添加到日志（debug 模式下显示更多，info 下精简）
+        if _is_debug():
+            args_lines = pretty.split('\n')
+            for line in args_lines:
+                self._log(f"[dim]  {line}[/dim]")
+        else:
+            # info 模式下只显示关键参数的一行摘要
+            summary_parts = []
+            for k, v in args.items():
+                val_str = str(v)
+                if len(val_str) > 80:
+                    val_str = val_str[:80] + "..."
+                summary_parts.append(f"{k}={val_str}")
+            self._log(f"[dim]  {', '.join(summary_parts)}[/dim]")
 
     def display_final_result(self, result: str):
         self.stop()
@@ -168,12 +256,13 @@ class TerminalDisplay:
         )
 
     def _render_log(self) -> Panel:
-        """渲染近期日志面板"""
-        recent = self._log_lines[-30:] if self._log_lines else ["[dim]等待操作...[/dim]"]
+        """渲染近期日志面板；debug 模式显示更多行数"""
+        max_lines = 50 if _is_debug() else 30
+        recent = self._log_lines[-max_lines:] if self._log_lines else ["[dim]等待操作...[/dim]"]
         text = Text.from_markup("\n".join(recent))
         return Panel(
             text,
-            title="[bold white]📜 操作日志[/bold white]",
+            title=f"[bold white]📜 操作日志 [{'bold yellow' if _is_debug() else 'bold cyan'}]{'DEBUG' if _is_debug() else 'INFO'}[/]",
             border_style="white",
             padding=(0, 1),
         )

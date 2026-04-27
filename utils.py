@@ -5,10 +5,44 @@ import yaml
 import logging
 from pathlib import Path
 
+# ─── 加载配置 ─────────────────────────────────────────────────────────────────
+
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
     WORKSPACE = Path(config["app"]["workspace"]).resolve()
 
+# ─── 日志系统初始化 ────────────────────────────────────────────────────────────
+
+def _init_logging():
+    """根据 config.yaml 中的 log_level 初始化全局日志级别"""
+    level_str = config.get("app", {}).get("log_level", "info").strip().lower()
+    if level_str == "debug":
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # 同时设置第三方库的日志级别，避免 debug 模式下噪音过大
+    logging.getLogger("httpx").setLevel(logging.WARNING if level_str != "debug" else logging.DEBUG)
+    logging.getLogger("openai").setLevel(logging.WARNING if level_str != "debug" else logging.DEBUG)
+    logging.getLogger("httpcore").setLevel(logging.WARNING if level_str != "debug" else logging.DEBUG)
+
+    return level_str, level
+
+LOG_LEVEL_STR, LOG_LEVEL = _init_logging()
+logger = logging.getLogger("agent")
+
+
+def is_debug() -> bool:
+    """判断当前是否为 debug 模式"""
+    return LOG_LEVEL_STR == "debug"
+
+
+# ─── 工具函数 ──────────────────────────────────────────────────────────────────
 
 def sanitize_text(text: str) -> str:
     """清洗字符串：抹除幽灵字符/代理字符，防止网络库崩溃"""
@@ -36,7 +70,7 @@ def run_bash(command: str) -> str:
         return output
     except subprocess.CalledProcessError as e:
         error_msg = f"命令执行失败。错误码: {e.returncode}\n错误信息: {e.stderr.strip()}"
-        logging.error(f"Error occurred while running bash command: {error_msg}")
+        logger.error(f"run_bash failed: {error_msg}")
         return error_msg
     except Exception as e:
         return f"系统调用异常: {str(e)}"
@@ -98,6 +132,8 @@ def edit_file(file_path: str, content: str) -> str:
 class Todomanager:
     """实时任务管理器，集成终端显示功能"""
     
+    VALID_STATUSES = ["pending", "in_progress", "processing", "completed"]
+    
     def __init__(self):
         self.tasks = []
         self._display = None
@@ -106,19 +142,22 @@ class Todomanager:
         """延迟加载终端显示器，避免循环导入"""
         if self._display is None:
             try:
-                from client import get_display  # 从 client 导入而不是 terminal_display
+                from client import get_display  
                 self._display = get_display()
             except ImportError:
                 return None
         return self._display
     
     def update_tasks(self, new_tasks: list) -> str:
-        """更新任务列表并更新显示"""
+        """更新任务列表并同步到终端显示
+        
+        每次调用需传入完整的任务列表（包括未完成和已完成的任务），
+        内部会用新列表完整替换旧列表并同步到 UI。
+        """
         if len(new_tasks) > 10:
             return "任务列表过长，请限制在10条以内。"
         
         validated_tasks = []
-        wether_processed = False
         
         for i, task in enumerate(new_tasks):
             text = task.get("text", "").strip()
@@ -127,10 +166,8 @@ class Todomanager:
             
             if not text:
                 return f"任务文本不能为空 (任务ID: {task_id})。"
-            if status not in ["pending", "completed", "processing"]:
-                return f"任务状态无效 (任务ID: {task_id})，必须是 'pending', 'completed' 或 'processing'。"
-            if status == "processing":
-                wether_processed = True 
+            if status not in self.VALID_STATUSES:
+                return f"任务状态无效 (任务ID: {task_id})，必须是 {self.VALID_STATUSES} 之一。"
             
             validated_tasks.append({
                 "id": task_id,
@@ -144,31 +181,21 @@ class Todomanager:
         # 同步到终端显示器
         display = self._get_display()
         if display:
-            # 检查现有任务并进行智能更新
-            existing_task_ids = {t.id for t in display.tasks}
+            # 用新列表完整替换显示器的任务列表
             new_task_ids = {t["id"] for t in validated_tasks}
             
-            # 更新现有任务
+            # 更新现有任务或添加新任务
             for new_task in validated_tasks:
                 task_id = new_task["id"]
-                if task_id in existing_task_ids:
-                    display.update_task(task_id, status=new_task["status"], text=new_task["text"])
+                existing = next((t for t in display.tasks if t.id == task_id), None)
+                if existing:
+                    existing.status = new_task["status"]
+                    existing.text = new_task["text"]
                 else:
                     display.add_task(task_id, new_task["text"], new_task["status"])
             
-            # 移除已删除的任务
+            # 移除已删除的任务（新列表中不存在的）
             display.tasks = [t for t in display.tasks if t.id in new_task_ids]
+            display._refresh()
         
-        return self.render()
-    
-    def render(self) -> str:
-        """渲染任务列表为文本"""
-        if not self.tasks:
-            return "当前没有待办任务。"
-        
-        lines = []
-        for task in self.tasks:
-            status_symbol = "✅" if task["status"] == "completed" else ("⏳" if task["status"] == "processing" else "🔲")
-            lines.append(f"{status_symbol} [{task['id']}] {task['text']}")
-        
-        return "\n".join(lines)
+        return f"任务列表已更新，共 {len(validated_tasks)} 条任务。"
