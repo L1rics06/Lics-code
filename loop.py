@@ -5,19 +5,24 @@ import time
 from openai import OpenAI
 import yaml
 import json
+import tools
 from utils import *
 from client import get_display, console
+import skillLoader
 
 # ─── 创建全局单例 Todomanager，避免每次调用都重新创建导致任务丢失 ──────────
 _todo_manager = Todomanager()
 
+
 # 工具名称 -> 处理函数的映射表
-TOOL_HANDLERS = {
+MAIN_TOOL_HANDLERS = {
     "run_bash": lambda **kw: run_bash(kw.get("command", "")),
     "read_file": lambda **kw: read_file(kw.get("file_path", "")),
     "write_file": lambda **kw: write_file(kw.get("file_path", ""), kw.get("content", "")),
     "append_file": lambda **kw: append_file(kw.get("file_path", ""), kw.get("content", "")),
-    "todo": lambda **kw: _todo_manager.update_tasks(kw.get("tasks", []))   # ← 用单例 + 正确的 key "tasks"
+    "todo": lambda **kw: _todo_manager.update_tasks(kw.get("tasks", [])), 
+    "run_subagent": lambda **kw: run_subagent(kw.get("prompt", "")),
+    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["skill_name"]),   
 }
 
 # 加载配置文件，初始化模型客户端
@@ -28,10 +33,12 @@ with open("./config.yaml", "r") as f:
         base_url=config["model"]["base_url"]
     )
     model = config["model"]["model_name"]
+    WORKSPACE = Path(config["app"]["workspace"]).resolve()
+    SKILL_DIR = Path(config["app"]["skills_dir"]).resolve()
+    SKILL_LOADER = skillLoader.SkillLoader(SKILL_DIR) 
 
 # 加载工具定义列表
-with open("./tools.json", "r") as f:
-    tools_list = json.load(f)
+tools_list = tools.PARENT_TOOLS
 
 
 def agent_loop(query, tools):
@@ -44,11 +51,21 @@ def agent_loop(query, tools):
     display.display_debug_config(
         model_name=model,
         base_url=config["model"]["base_url"],
-        workspace=str(WORKSPACE),
+            workspace=str(WORKSPACE),
         log_level=LOG_LEVEL_STR,
     )
     
-    messages = [{"role": "user", "content": query}]
+    skill_list = SKILL_LOADER.get_descriptions()
+    system_prompt = (
+        "你是一个智能 Agent，可以调用工具完成用户任务。\n"
+        "以下技能可通过 load_skill 工具加载，加载后按技能中的说明行动：\n"
+        f"{skill_list}\n"
+        "如果任务与某个技能匹配，请先调用 load_skill 加载该技能。"
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": query},
+    ]
     rounds_since_todo = 0
     used_todo = False
     
@@ -71,9 +88,11 @@ def agent_loop(query, tools):
             messages_count=len(messages),
             tools_count=len(tools),
         )
+        display.flush()
         
         #调用 API 并计时 
         t_start = time.time()
+        
         response = llm_client.chat.completions.create(
             model=model,
             messages=messages,
@@ -104,6 +123,7 @@ def agent_loop(query, tools):
 
         if finish_reason != "tool_calls":
             display.display_info("对话完成，生成最终结果")
+            display.flush()
             return response.choices[0].message.content
 
         # 遍历处理所有并发调用的工具
@@ -116,7 +136,7 @@ def agent_loop(query, tools):
 
             display.display_tool_call(tool_name, arguments)
 
-            handler = TOOL_HANDLERS.get(tool_name)
+            handler = MAIN_TOOL_HANDLERS.get(tool_name)
             if handler:
                 try:
                     t_tool_start = time.time()
@@ -155,8 +175,11 @@ def agent_loop(query, tools):
             if block.function.name == "todo":
                 used_todo = True
                 # 任务列表的同步已由 Todomanager.update_tasks() 内部完成，
-                # 这里只需要触发一次显示刷新即可
                 display.show_task_summary()
+            
+            if block.function.name == "run_subagent":
+                # 显示子Agent的调用结果，帮助用户理解子Agent的执行情况
+                display.display_info(f"子Agent 返回结果: {output[:256]}...")
 
             rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
 
@@ -166,6 +189,9 @@ def agent_loop(query, tools):
                 "name": tool_name,
                 "content": output 
             })
+        
+      
+        display.flush()
 
 if __name__ == "__main__":
     input_query = sanitize_text(input("Enter your query: ").strip())

@@ -44,27 +44,38 @@ class Task:
 
 # ─── 主显示类 ─────────────────────────────────────────────────────────────────
 
+# 最小刷新间隔（秒），防止高频刷新导致闪烁
+_MIN_REFRESH_INTERVAL = 0.15
+
+
 class TerminalDisplay:
     """Rich 驱动的终端显示器，实时渲染 Todo 列表与操作日志；
-    根据 log_level 自动切换 info / debug 输出粒度"""
+    根据 log_level 自动切换 info / debug 输出粒度
+    
+    刷新策略：关闭定时自动刷新，仅在有新消息或任务变动时按需刷新，
+    并通过节流机制避免高频刷新导致闪屏。"""
 
     def __init__(self):
         self.tasks: list[Task] = []
         self._log_lines: list[str] = []  # 保存近期日志（纯文本备用）
         self._live: Optional[Live] = None
         self._layout = Layout()
+        self._last_refresh_ts: float = 0.0  # 上次刷新时间戳
+        self._pending_refresh: bool = False  # 是否有被节流跳过的待刷新
 
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
     def start(self):
-        """启动 Live 渲染"""
+        """启动 Live 渲染（关闭定时自动刷新，仅按需刷新）"""
         self._live = Live(
             self._render(),
             console=console,
-            refresh_per_second=1,
+            auto_refresh=False,  # 不再定时自动刷新，仅在有变化时手动刷新
             vertical_overflow="visible",
         )
         self._live.start()
+        # 首次渲染
+        self._do_refresh()
 
     def stop(self):
         if self._live:
@@ -87,7 +98,7 @@ class TerminalDisplay:
 
     def show_task_summary(self):
         """强制刷新（任务列表有变动后调用）"""
-        self._refresh()
+        self.flush()
 
     # ── 日志输出 ──────────────────────────────────────────────────────────────
 
@@ -96,7 +107,33 @@ class TerminalDisplay:
         self._log_lines.append(f"[dim]{ts}[/dim]  {msg}")
         if len(self._log_lines) > 200:
             self._log_lines = self._log_lines[-200:]
+        # 有新消息出现时才触发刷新（节流）
         self._refresh()
+
+    # ── 刷新控制 ──────────────────────────────────────────────────────────────
+
+    def _refresh(self):
+        """带节流的按需刷新：距离上次刷新不足 _MIN_REFRESH_INTERVAL 时跳过，
+        但标记 _pending_refresh，由 flush() 补刷"""
+        if not self._live:
+            return
+        now = time.time()
+        if now - self._last_refresh_ts < _MIN_REFRESH_INTERVAL:
+            self._pending_refresh = True
+            return
+        self._do_refresh()
+
+    def _do_refresh(self):
+        """执行实际刷新（无节流），仅供内部使用"""
+        if not self._live:
+            return
+        self._last_refresh_ts = time.time()
+        self._pending_refresh = False
+        self._live.update(self._render(), refresh=True)
+
+    def flush(self):
+        """强制立即刷新，忽略节流限制（在关键节点调用，如任务变更后）"""
+        self._do_refresh()
 
     # ── info 级别日志 ────────────────────────────────────────────────────────
 
@@ -224,7 +261,7 @@ class TerminalDisplay:
     # ── 渲染 ──────────────────────────────────────────────────────────────────
 
     def _render_todo(self) -> Panel:
-        """渲染 Todo 列表面板"""
+        """渲染 Todo 列表面板，显示所有任务（含已完成的）"""
         if not self.tasks:
             body = Text("暂无任务", style="dim", justify="center")
         else:
@@ -239,18 +276,38 @@ class TerminalDisplay:
             table.add_column("任务", ratio=1)
             table.add_column("状态", width=10, justify="center")
 
-            for t in self.tasks:
+            # 先显示未完成的任务（pending / in_progress / processing），再显示已完成的
+            active_tasks = [t for t in self.tasks if t.status != "completed"]
+            completed_tasks = [t for t in self.tasks if t.status == "completed"]
+
+            for t in active_tasks:
                 icon, style = STATUS_STYLE.get(t.status, ("?", "white"))
                 table.add_row(
                     t.id,
                     Text(t.text, overflow="fold"),
                     Text(f"{icon} {t.status}", style=style),
                 )
+
+            if completed_tasks:
+                # 分隔线：区分进行中和已完成
+                table.add_row("─", "─" * 20, "─" * 6)
+                for t in completed_tasks:
+                    icon, style = STATUS_STYLE.get(t.status, ("?", "white"))
+                    table.add_row(
+                        t.id,
+                        Text(t.text, overflow="fold", style="dim"),
+                        Text(f"{icon} done", style=style),
+                    )
+
             body = table
+
+        completed_count = sum(1 for t in self.tasks if t.status == "completed")
+        total_count = len(self.tasks)
+        title = f"[bold blue]📋 Todo List[/bold blue]  [dim]{completed_count}/{total_count} 已完成[/dim]"
 
         return Panel(
             body,
-            title="[bold blue]📋 Todo List[/bold blue]",
+            title=title,
             border_style="blue",
             padding=(0, 1),
         )
@@ -275,10 +332,6 @@ class TerminalDisplay:
             Layout(self._render_log(), name="log", ratio=3),
         )
         return layout
-
-    def _refresh(self):
-        if self._live:
-            self._live.update(self._render())
 
 
 # ─── 单例 ─────────────────────────────────────────────────────────────────────

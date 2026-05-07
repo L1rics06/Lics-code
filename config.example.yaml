@@ -6,3 +6,4 @@ model:
 app:
   workspace: "." #默认工作目录为当前目录
   log_level: "info" #日志级别：info（常规信息）或 debug（详细调试信息，含请求/响应/耗时/用量等）
+  skills_dir: "./skills" #技能文件所在目录，默认为 ./skills

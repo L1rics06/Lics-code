@@ -130,13 +130,17 @@ def edit_file(file_path: str, content: str) -> str:
 
 
 class Todomanager:
-    """实时任务管理器，集成终端显示功能"""
+    """实时任务管理器，集成终端显示功能
+    
+    已完成的任务会被保留在显示列表中，即使后续更新中不再包含它们，
+    这样用户可以始终看到全部任务（含已完成的）的完整进度。"""
     
     VALID_STATUSES = ["pending", "in_progress", "processing", "completed"]
     
     def __init__(self):
         self.tasks = []
         self._display = None
+        self._completed_ids: set = set()  # 记录所有曾经完成过的任务ID
     
     def _get_display(self):
         """延迟加载终端显示器，避免循环导入"""
@@ -153,6 +157,9 @@ class Todomanager:
         
         每次调用需传入完整的任务列表（包括未完成和已完成的任务），
         内部会用新列表完整替换旧列表并同步到 UI。
+        
+        注意：已完成的任务即使在后续更新中被省略，也会保留在显示中，
+        以确保用户可以看到完整的工作进度。
         """
         if len(new_tasks) > 10:
             return "任务列表过长，请限制在10条以内。"
@@ -178,6 +185,11 @@ class Todomanager:
         # 更新内部状态
         self.tasks = validated_tasks
         
+        # 记录本轮新增的已完成任务ID
+        for t in validated_tasks:
+            if t["status"] == "completed":
+                self._completed_ids.add(t["id"])
+        
         # 同步到终端显示器
         display = self._get_display()
         if display:
@@ -194,8 +206,24 @@ class Todomanager:
                 else:
                     display.add_task(task_id, new_task["text"], new_task["status"])
             
-            # 移除已删除的任务（新列表中不存在的）
-            display.tasks = [t for t in display.tasks if t.id in new_task_ids]
-            display._refresh()
+            # 移除已删除的任务（新列表中不存在的），但保留已完成过的任务
+            display.tasks = [
+                t for t in display.tasks 
+                if t.id in new_task_ids or t.id in self._completed_ids
+            ]
+            
+            # 确保已完成的任务在display中也标记为completed（防止LLM省略后状态丢失）
+            for t in display.tasks:
+                if t.id in self._completed_ids and t.status != "completed":
+                    t.status = "completed"
+            
+            # 强制刷新（任务变更是关键节点，确保立即可见）
+            display.flush()
         
         return f"任务列表已更新，共 {len(validated_tasks)} 条任务。"
+    
+    
+def run_subagent(prompt: str) -> str:
+    """运行子Agent，执行工具并返回结果"""
+    from subAgent import run_subagent  # 避免循环导入
+    return run_subagent(prompt) 
